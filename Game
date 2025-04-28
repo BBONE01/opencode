@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <title>3D Tower Defense with Three.js</title>
+  <style>
+    body { margin: 0; overflow: hidden; }
+    #shop { position: absolute; top: 10px; left: 10px; color: white; font-family: Arial; }
+  </style>
+</head>
+<body>
+<div id="shop"></div>
+<script src="https://cdn.jsdelivr.net/npm/three@0.153.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.153.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+/* —— BASIC THREE.JS SETUP —— */
+const scene    = new THREE.Scene();
+const camera   = new THREE.PerspectiveCamera(60, innerWidth/innerHeight, 0.1, 1000);
+camera.position.set(0, 50, 100);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+const controls = new THREE.OrbitControls(camera, renderer.domElement);
+
+/* —— LIGHTS —— */
+scene.add(new THREE.AmbientLight(0x666666));
+const dir = new THREE.DirectionalLight(0xffffff, 1);
+dir.position.set(50, 100, 50);
+scene.add(dir);
+
+/* —— GROUND PLANE —— */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(200, 200),
+  new THREE.MeshPhongMaterial({ color: 0x228822 })
+);
+ground.rotation.x = -Math.PI/2;
+scene.add(ground);
+
+/* —— GAME DATA —— */
+let gold         = 0;
+let level        = 1;
+let wave         = 0;
+let enemiesAlive = 0;
+const WAVES_PER_LEVEL = 4;
+
+const towers  = [];
+const enemies = [];
+const bullets = [];
+
+/* —— SHOP UI —— */
+const shopDiv = document.getElementById('shop');
+function updateShopUI(text) { shopDiv.innerHTML = text; }
+
+/* —— TOWER CLASS —— */
+class Tower {
+  constructor(pos) {
+    this.range    = 30;
+    this.fireRate = 1;   // shots per second
+    this.lastShot = 0;
+    this.damage   = 10;
+    const geom = new THREE.CylinderGeometry(2,2,2);
+    const mat  = new THREE.MeshLambertMaterial({ color: 0x8888ff });
+    this.mesh = new THREE.Mesh(geom, mat);
+    this.mesh.position.copy(pos);
+    scene.add(this.mesh);
+  }
+  update(dt) {
+    this.lastShot += dt;
+    if (this.lastShot < 1/this.fireRate) return;
+    // tìm enemy gần nhất trong range
+    let target = null, minD = Infinity;
+    enemies.forEach(e => {
+      const d = e.mesh.position.distanceTo(this.mesh.position);
+      if (d < minD && d <= this.range) {
+        minD = d; target = e;
+      }
+    });
+    if (target) {
+      this.lastShot = 0;
+      this.shoot(target);
+    }
+  }
+  shoot(target) {
+    const bGeom = new THREE.SphereGeometry(0.5);
+    const bMat  = new THREE.MeshBasicMaterial({ color: 0xffff00 });
+    const bulletMesh = new THREE.Mesh(bGeom, bMat);
+    bulletMesh.position.copy(this.mesh.position);
+    scene.add(bulletMesh);
+    bullets.push({ mesh: bulletMesh, target, damage: this.damage });
+  }
+}
+
+/* —— ENEMY CLASS —— */
+class Enemy {
+  constructor(isBoss=false) {
+    const geom = new THREE.BoxGeometry(2,2,2);
+    const mat  = new THREE.MeshLambertMaterial({ color: isBoss ? 0xffff00 : 0xff2222 });
+    this.mesh = new THREE.Mesh(geom, mat);
+    this.mesh.position.set(-90, 1, 0);
+    this.isBoss = isBoss;
+    this.hp     = isBoss ? 200 + (level-1)*50 : 30 + (level-1)*10;
+    this.speed  = isBoss ? 20 : 10 + wave*2;
+    this.reward = isBoss ? 50 + (level-1)*20 : 5 + (level-1)*2;
+    scene.add(this.mesh);
+    enemies.push(this);
+    enemiesAlive++;
+  }
+  update(dt) {
+    this.mesh.position.x += this.speed * dt;
+    if (this.mesh.position.x > 90) {
+      // lọt thành -> game over
+      gameOver();
+    }
+  }
+}
+
+/* —— GAME FLOW —— */
+function spawnWave() {
+  wave++;
+  updateShopUI(`Level ${level} - Wave ${wave}/${WAVES_PER_LEVEL+1}<br>Vàng: ${gold}`);
+  if (wave <= WAVES_PER_LEVEL) {
+    // wave thường
+    const count = 5 + wave*2;
+    for (let i=0; i<count; i++) {
+      setTimeout(()=> new Enemy(false), i * 1000);
+    }
+  } else {
+    // boss wave
+    setTimeout(()=> new Enemy(true), 500);
+  }
+}
+
+function checkWaveEnd() {
+  if (enemiesAlive === 0) {
+    openShop();
+  }
+}
+
+/* —— SHOP —— */
+function openShop() {
+  inShop = true;
+  updateShopUI(`
+    <b>🛒 Shop sau wave ${wave}</b><br>
+    <button onclick="buyTower()">➕ Thêm Tướng (20v)</button><br>
+    <button onclick="upgradeTowers()">👑 Upgrade Tướng</button><br>
+    <button onclick="upgradeSkill()">💥 Upgrade Skill</button><br>
+    <button onclick="continueNext()">▶️ Tiếp tục</button><br>
+    Vàng hiện tại: ${gold}
+  `);
+}
+
+function buyTower() {
+  if (gold < 20) return alert('Không đủ vàng!');
+  gold -= 20;
+  const z = THREE.MathUtils.randFloatSpread(50);
+  towers.push(new Tower(new THREE.Vector3(0,1,z)));
+  updateShopUI(shopDiv.innerHTML.replace(/Vàng hiện tại: \d+/, `Vàng hiện tại: ${gold}`));
+}
+function upgradeTowers() {
+  // tăng damage tất cả tower
+  towers.forEach(t=>t.damage += 5);
+}
+function upgradeSkill() {
+  // hiện tại chưa triển khai chiêu riêng
+  alert('Skill 3D chưa làm!');
+}
+function continueNext() {
+  // qua wave kế hoặc màn mới
+  inShop = false;
+  if (wave > WAVES_PER_LEVEL) {
+    level++;
+    wave = 0;
+  }
+  spawnWave();
+}
+
+/* —— GAME OVER —— */
+let inShop = false;
+function gameOver() {
+  updateShopUI('<b>💀 Game Over</b><br>F5 để chơi lại');
+  cancelAnimationFrame(animId);
+}
+
+/* —— MAIN LOOP —— */
+let last = performance.now();
+let animId;
+function animate(now) {
+  const dt = (now - last) / 1000;
+  last = now;
+
+  // update towers
+  towers.forEach(t => t.update(dt));
+  // update enemies
+  enemies.forEach((e,i) => {
+    e.update(dt);
+    if (e.hp <= 0) {
+      scene.remove(e.mesh);
+      enemies.splice(i,1);
+      enemiesAlive--;
+      gold += e.reward;
+      checkWaveEnd();
+    }
+  });
+  // update bullets
+  bullets.forEach((b,i) => {
+    b.mesh.position.lerp(b.target.mesh.position, dt * 5);
+    if (b.mesh.position.distanceTo(b.target.mesh.position) < 1) {
+      b.target.hp -= b.damage;
+      scene.remove(b.mesh);
+      bullets.splice(i,1);
+    }
+  });
+
+  renderer.render(scene,camera);
+  controls.update();
+  animId = requestAnimationFrame(animate);
+}
+
+// Start
+towers.push(new Tower(new THREE.Vector3(0,1,0)));  // 1 tower khởi đầu
+spawnWave();
+animId = requestAnimationFrame(animate);
+</script>
+</body>
+</html>
+
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <title>3D Tower Defense (ESM)</title>
+  <style>body { margin:0; overflow:hidden } canvas{ display:block }</style>
+</head>
+<body>
+  <div id="shop" style="position:absolute;top:10px;left:10px;color:white;font-family:sans-serif;"></div>
+  <script type="module">
+    import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.153.0/build/three.module.js';
+    import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.153.0/examples/jsm/controls/OrbitControls.js';
+
+    // ————— your full 3D game code here, using THREE and OrbitControls —————
+    const scene    = new THREE.Scene();
+    const camera   = new THREE.PerspectiveCamera(60, innerWidth/innerHeight, 0.1, 1000);
+    camera.position.set(0,50,100);
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(innerWidth, innerHeight);
+    document.body.appendChild(renderer.domElement);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    // … rest of your code unchanged, but remove script-src includes for three.js / OrbitControls.js …
+
+  </script>
+</body>
+</html>
